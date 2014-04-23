@@ -24,8 +24,10 @@ Options:
 
 from collections import deque
 from docopt import docopt
+from io import StringIO
 import logging
 import logging.handlers
+import lxml.etree as etree
 import os
 from pprint import pprint
 import praw
@@ -119,19 +121,15 @@ class OASourceBot(object):
         new_content_md = wikipage.content_md + '\n    ' + item
         wikipage.edit(new_content_md)
 
-    def run(self):
-        log.info('Running!')
-        #self.alive = True
-        #self.latest_time = time.time()
-        self.latest_review_time = time.time()
-
-        def predicate(post):
+    def predicate(self, post):
             """
             The predicate defines what posts will be recognized and replied to.
             This will return True only for posts to which OA_source_bot will
             try to reply to.
             """
             if post.subreddit.display_name not in self.watched_subreddits:
+                return False
+            if post.author is None:  # Deleted? Removed? Skip it.
                 return False
             if post.author.name in self.ignored_users:
                 return False
@@ -141,26 +139,45 @@ class OASourceBot(object):
                 return False
             return True
 
-        while True:
+    def run(self):
+        log.info('Running!')
+        self.alive = True
+        self.latest_review_time = time.time()
+        while self.alive:
             try:
-                for post in praw.helpers.submission_stream(self.reddit,
-                                                           'all',
-                                                           limit=None,
-                                                           verbosity=0):
-                    now = time.time()
-                    #Wait at least 10 minutes between reviewing posts
-                    if now - self.latest_review_time > 600:
-                        self.latest_review_time = now
-                        self.review_posts()
-                    if not predicate(post):
-                        continue
-                    #TODO: make the already_seen data persistent between launches
-                    self.already_seen.append(post)
-
+                self._run()
+            except KeyboardInterrupt as e:
+                log.exception(e)
+                self.alive = False
             except Exception as e:
                 log.exception(e)
-                #self.alive = False
-                break
+                time.sleep(30)
+        self.close_nicely()
+
+    def _run(self):
+        for post in praw.helpers.submission_stream(self.reddit,
+                                                   '+'.join(self.watched_subreddits),
+                                                   limit=None,
+                                                   verbosity=0):
+            now = time.time()
+            #Wait at least 10 minutes between reviewing posts
+            if now - self.latest_review_time > 600:
+                self.latest_review_time = now
+                self.review_posts()
+            if not self.predicate(post):
+                continue
+            #TODO: make the already_seen data persistent between launches
+            self.already_seen.append(post)
+            self.reply_to(post)
+
+    def reply_to(self, post):
+        #Here's the notion... create the desired content as an html tree
+        #then create a process for serializing the tree as markdown
+        parser = etree.HTMLParser(remove_blank_text=True)
+        #How did autowikibot accomplish an element attribute?
+        html = etree.parse(StringIO('<div class="md"/>'), parser)
+        div = html.find('.//div')
+        #str(etree.tostring(div, method='html', encoding='utf-8'),encoding='utf-8'))
 
     def review_posts(self):
         user = self.reddit.get_redditor(self.username)
@@ -181,6 +198,9 @@ class OASourceBot(object):
                         if r_author not in self.ignored_users:
                             self.ignored_users.add(r_author)
                             self.write_new_item_to_wikipage(self.ignored_users_wikipage, r_author)
+
+    def close_nicely(self):
+        log.info('closing nicely')
 
 if __name__ == '__main__':
     args = docopt(__doc__, version=__version__)
