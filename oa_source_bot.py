@@ -22,12 +22,10 @@ Options:
   -v --version              Print the version and exit
 """
 
-import base64
-from bcoding import bencode, bdecode
+
 from collections import deque
 from docopt import docopt
 from io import StringIO
-import hashlib
 import logging
 import logging.handlers
 import os
@@ -41,7 +39,6 @@ import urllib.parse
 
 __version__ = '0.0.1'
 LOGNAME = 'OA_source_bot'
-
 
 def logging_config(filename, console_level, smtp=None):
     log = logging.getLogger(LOGNAME)
@@ -172,10 +169,12 @@ class OASourceBot(object):
     def load_config_and_login(self, config_filename):
         with open(config_filename, 'r') as inf:
             self.username = inf.readline().strip()
+            log.debug('Username: ' + self.username)
             password = inf.readline().strip()
             self.ignored_users_wikipage = inf.readline().strip()
             self.watched_subreddits_wikipage = inf.readline().strip()
-            self.oa_domains_wikipage = inf.readline().strip()
+            self.dropbox = inf.readline().strip()
+            log.debug('Dropbox folder: ' + self.dropbox)
         self.reddit = praw.Reddit(self.user_agent)
         login_attempt = True
         while login_attempt:
@@ -204,11 +203,6 @@ class OASourceBot(object):
                                                  self.watched_subreddits_wikipage)
         for watched in watched_page.content_md.split('\n'):
             self.watched_subreddits.add(watched.strip())
-        #log.debug('Accessing wikipage {0} for recognized OA domains'.format(self.oa_domains_wikipage))
-        #domain_page = self.reddit.get_wiki_page(self.username,
-                                                #self.oa_domains_wikipage)
-        #for domain in domain_page.content_md.split('\n'):
-            #self.oa_domains.add(domain.strip())
 
     def write_new_item_to_wikipage(self, wikipagename, item):
         log.debug('Adding {0} to wikipage {1}'.format(item, wikipagename))
@@ -233,13 +227,6 @@ class OASourceBot(object):
             if post.domain not in self.oa_domains:
                 return False
             return True
-
-    def domain_predicate(self, post):
-        if post.domain.startswith('plos'):  # Handle all PLoS domains
-            if 'info%3Adoi%2F10.1371%2F' in post.url:
-                return True
-            else:
-                return False
 
     def run(self):
         log.info('Running!')
@@ -322,8 +309,10 @@ feedback/suggestions, or would like to contribute.*
         basename = domain_obj.file_basename_from_doi(article_doi)
         epubname2 = 'epubs/epub2/{0}.epub'.format(basename)
         epubname3 = 'epubs/epub3/{0}.epub'.format(basename)
-        torrname2 = 'epubs/torrents/{0}.2.torrent'.format(basename)
-        torrname3 = 'epubs/torrents/{0}.3.torrent'.format(basename)
+        torr2_loc = 'epub2/{0}.torrent'.format(basename)
+        torr3_loc = 'epub3/{0}.torrent'.format(basename)
+        torrname2 = os.path.join(self.dropbox, torr2_loc)
+        torrname3 = os.path.join(self.dropbox, torr3_loc)
         try:
             epub2 = subprocess.check_call(['oaepub', 'convert',
                                            '-2',
@@ -338,7 +327,8 @@ feedback/suggestions, or would like to contribute.*
             subprocess.call(['mktorrent',
                              '-a', 'udp://tracker.publicbt.com:80',
                              '-o', torrname2, epubname2])
-            magnet2 = self.make_magnetlink(torrname2)
+            torr_url2 = 'http://dl.dropboxusercontent.com/u/6424897/' + torr2_loc
+            #magnet2 = self.make_magnetlink(torrname2)
 
         try:
             epub3 = subprocess.check_call(['oaepub', 'convert',
@@ -353,7 +343,8 @@ feedback/suggestions, or would like to contribute.*
             subprocess.call(['mktorrent',
                              '-a', 'udp://tracker.publicbt.com:80',
                              '-o', torrname3, epubname3])
-            magnet3 = self.make_magnetlink(torrname3)
+            torr_url3 = 'http://dl.dropboxusercontent.com/u/6424897/' + torr3_loc
+            #magnet3 = self.make_magnetlink(torrname3)
 
         if not any([epub2, epub3]):  # Neither were successful, ignore EPUB
             reply.edit(text.format(**{'online': post.url,
@@ -363,33 +354,32 @@ feedback/suggestions, or would like to contribute.*
                                       'comment-id': reply.id}))
             return
         elif all([epub2, epub3]):  # Both successful
-            formats = '[EPUB2]({mag2}) | [EPUB3]({mag3}'.format(**{'mag2': magnet2,
-                                                                   'mag3': magnet3})
+            formats = '[EPUB2]({0}) | [EPUB3]({1})'.format(torr_url2, torr_url3)
             epub_text = epub_text.format(formats)
         elif epub2:
-            epub_text = epub_text.format('[EPUB2]({0})'.format(magnet2))
+            epub_text = epub_text.format('[EPUB2]({0})'.format(torr_url2))
         elif epub3:
-            epub_text = epub_text.format('[EPUB2]({0})'.format(magnet3))
+            epub_text = epub_text.format('[EPUB2]({0})'.format(torr_url3))
         reply.edit(text.format(**{'online': post.url,
                                   'op': post.author,
                                   'pdf': pdf_url,
                                   'epub': epub_text,
                                   'comment-id': reply.id}))
 
-    def make_magnetlink(self, torrent_filename):
-        #http://stackoverflow.com/questions/12479570/given-a-torrent-file-how-do-i-generate-a-magnet-link-in-python
-        with open(torrent_filename, 'rb') as torrent:
-            metadata = bdecode(torrent)
-        hashcontents = bencode(metadata['info'])
-        digest = hashlib.sha1(hashcontents).digest()
-        b32hash = base64.b32encode(digest)
-        params = {'xt': 'urn:btih:%s' % b32hash,
-                  'dn': metadata['info']['name'],
-                  'tr': metadata['announce'],
-                  'xl': metadata['info']['length']}
-        paramstr = urllib.parse.urlencode(params)
-        print(paramstr)
-        return 'magnet:?' + paramstr
+    #def make_magnetlink(self, torrent_filename):
+        ##http://stackoverflow.com/questions/12479570/given-a-torrent-file-how-do-i-generate-a-magnet-link-in-python
+        #with open(torrent_filename, 'rb') as torrent:
+            #metadata = bdecode(torrent)
+        #hashcontents = bencode(metadata['info'])
+        #digest = hashlib.sha1(hashcontents).digest()
+        #b32hash = base64.b32encode(digest)
+        #params = {'xt': 'urn:btih:%s' % b32hash,
+                  #'dn': metadata['info']['name'],
+                  #'tr': metadata['announce'],
+                  #'xl': metadata['info']['length']}
+        #paramstr = urllib.parse.urlencode(params)
+        #print(paramstr)
+        #return 'magnet:?' + paramstr
 
     def review_posts(self):
         user = self.reddit.get_redditor(self.username)
