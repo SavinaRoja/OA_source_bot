@@ -21,5 +21,5 @@ setup(name='OA_source_bot',
       scripts=[],
       data_files=[('', ['README.md'])],
       classifiers=[],
-      install_requires=['docopt', 'praw', 'bcoding']
+      install_requires=['docopt', 'praw']
       )

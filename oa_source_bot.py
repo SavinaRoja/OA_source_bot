@@ -24,6 +24,7 @@ Options:
 
 
 from collections import deque
+import datetime
 from docopt import docopt
 from io import StringIO
 import logging
@@ -31,6 +32,7 @@ import logging.handlers
 import os
 import praw
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -262,7 +264,7 @@ class OASourceBot(object):
             self.reply_to_post(post)
 
     def reply_to_post(self, post):
-        reply = post.add_comment('Initiating reply')
+        reply = post.add_comment('Initiating reply, refresh in a few seconds.')
         text = '''\
 This article is freely available online to everyone as \
 **[OpenAccess](http://en.wikipedia.org/wiki/Open_access)**.
@@ -307,16 +309,19 @@ feedback/suggestions, or would like to contribute.*
             return
 
         basename = domain_obj.file_basename_from_doi(article_doi)
-        epubname2 = 'epubs/epub2/{0}.epub'.format(basename)
-        epubname3 = 'epubs/epub3/{0}.epub'.format(basename)
-        torr2_loc = 'epub2/{0}.torrent'.format(basename)
-        torr3_loc = 'epub3/{0}.torrent'.format(basename)
-        torrname2 = os.path.join(self.dropbox, torr2_loc)
-        torrname3 = os.path.join(self.dropbox, torr3_loc)
+        epubname = basename + '.epub'
+        epubname2 = 'epubs/{0}-2.epub'.format(basename)
+        epubname3 = 'epubs/{0}-3.epub'.format(basename)
+        timestamp = datetime.datetime.now().isoformat()
+        torr_name2 = '{0}-{1}.2.torrent'.format(basename, timestamp)
+        torr_name3 = '{0}-{1}.3.torrent'.format(basename, timestamp)
+        torr_file2 = os.path.join('torrents', torr_name2)
+        torr_file3 = os.path.join('torrents', torr_name3)
+        torr_drop2 = os.path.join(self.dropbox, torr_name2)
+        torr_drop3 = os.path.join(self.dropbox, torr_name3)
         try:
             epub2 = subprocess.check_call(['oaepub', 'convert',
                                            '-2',
-                                           '-o', 'epubs/epub2/',
                                            'doi:' + article_doi])
         except subprocess.CalledProcessError as e:
             log.exception(e)
@@ -324,27 +329,28 @@ feedback/suggestions, or would like to contribute.*
             epub2 = False
         else:
             epub2 = True
+            shutil.move(epubname, epubname2)
             subprocess.call(['mktorrent',
                              '-a', 'udp://tracker.publicbt.com:80',
-                             '-o', torrname2, epubname2])
-            torr_url2 = 'http://dl.dropboxusercontent.com/u/6424897/' + torr2_loc
-            #magnet2 = self.make_magnetlink(torrname2)
+                             '-o', torr_drop2, epubname2])
+            shutil.copy2(torr_drop2, torr_file2)
+            torr_url2 = 'http://dl.dropboxusercontent.com/u/6424897/' + torr_name2
 
         try:
             epub3 = subprocess.check_call(['oaepub', 'convert',
                                            '-3',
-                                           '-o', 'epubs/epub3/',
                                            'doi:' + article_doi])
         except subprocess.CalledProcessError as e:
             log.exception(e)
             epub3 = False
         else:
             epub3 = True
+            shutil.move(epubname, epubname3)
             subprocess.call(['mktorrent',
                              '-a', 'udp://tracker.publicbt.com:80',
-                             '-o', torrname3, epubname3])
-            torr_url3 = 'http://dl.dropboxusercontent.com/u/6424897/' + torr3_loc
-            #magnet3 = self.make_magnetlink(torrname3)
+                             '-o', torr_drop3, epubname3])
+            shutil.copy2(torr_drop3, torr_file3)
+            torr_url3 = 'http://dl.dropboxusercontent.com/u/6424897/' + torr_name3
 
         if not any([epub2, epub3]):  # Neither were successful, ignore EPUB
             reply.edit(text.format(**{'online': post.url,
@@ -365,21 +371,6 @@ feedback/suggestions, or would like to contribute.*
                                   'pdf': pdf_url,
                                   'epub': epub_text,
                                   'comment-id': reply.id}))
-
-    #def make_magnetlink(self, torrent_filename):
-        ##http://stackoverflow.com/questions/12479570/given-a-torrent-file-how-do-i-generate-a-magnet-link-in-python
-        #with open(torrent_filename, 'rb') as torrent:
-            #metadata = bdecode(torrent)
-        #hashcontents = bencode(metadata['info'])
-        #digest = hashlib.sha1(hashcontents).digest()
-        #b32hash = base64.b32encode(digest)
-        #params = {'xt': 'urn:btih:%s' % b32hash,
-                  #'dn': metadata['info']['name'],
-                  #'tr': metadata['announce'],
-                  #'xl': metadata['info']['length']}
-        #paramstr = urllib.parse.urlencode(params)
-        #print(paramstr)
-        #return 'magnet:?' + paramstr
 
     def review_posts(self):
         user = self.reddit.get_redditor(self.username)
