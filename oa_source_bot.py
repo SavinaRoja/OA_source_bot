@@ -27,6 +27,7 @@ from collections import deque
 from docopt import docopt
 import logging
 import logging.handlers
+import lxml.html
 import os
 import praw
 import re
@@ -34,7 +35,8 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.parse
+from urllib.parse import urlparse, urlunparse
+import urllib.request
 
 
 __version__ = '0.0.1'
@@ -128,7 +130,7 @@ class PLoSDomain(Domain):
         """
         Returns a URL to the PDF of the article.
         """
-        parsed = urllib.parse.urlparse(post.url)
+        parsed = urlparse(post.url)
         pdf_url = '{0}://{1}'.format(parsed.scheme, parsed.netloc)
         pdf_url += '/article/fetchObjectAttachment.action?uri='
         pdf_path = parsed.path.replace(':', '%3A').replace('/', '%2F')
@@ -146,6 +148,63 @@ class PLoSDomain(Domain):
         return doi.split('/')[1]
 
 
+class NatureDomain(Domain):
+    """
+    Handles nature.com
+    """
+    oaepub_support = False
+    #Last updated on 29-4-2014 from information located here:
+    #http://www.nature.com/libraries/open_access/oa_pub_models.html
+    full_oa_subjournals = set(['bcj', 'cddis', 'ctg', 'cti', 'psp', 'emi',
+                               'emm', 'hortres', 'hgv', 'ijos', 'lsa', 'mtm',
+                               'mtna', 'am', 'nutd', 'oncsis', 'srep', 'tp'])
+    opt_oa_subjournals = set(['ajg', 'aps' 'bdj', 'bdc', 'bmt', 'cgt', 'cdd',
+                              'cr', 'cmi', 'clpt', 'ejcn', 'ejhg', 'eye',
+                              'gene', 'gt', 'gim', 'hdy', 'hr', 'icb', 'ijir',
+                              'ijo', 'ismej', 'ja', 'jcbfm', 'jes', 'jhg',
+                              'jhh', 'jid', 'jp', 'ki', 'labinvest', 'leu',
+                              'modpathol', 'mp', 'mt', 'mi', 'ncomms', 'npp',
+                              'onc', 'pr', 'tpj', 'pj', 'pcan', 'sc'])
+
+    def __init__(self):
+        super(NatureDomain, self).__init__()
+
+    def predicate(post):
+        #matches full article link or abstract
+        full_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/full/\S+.html'
+        abst_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/abs/\S+.html'
+        full = re.search(full_regex, post.url)
+        abst = re.search(abst, post.ufl)
+        if full is None and abst is None:  # Not an article
+            return False
+        if full is not None:
+            full_url = post.url
+        else:
+            full_url = post.url.replace('/full/', '/abs/')
+        parsed_url = urlparse(full_url)
+        subjournal = path.split('/')[1]
+        #Some nature subjournals are full OA
+        if subjournal in self.full_oa_subjournals:
+            return True
+        if subjournal not in self.opt_oa_subjournals:
+            return False
+
+        page_html = urllib.request.urlopen(full_url)
+        doc = lxml.html.fromstring(page_html.read())
+        if doc.find(".//h1[@class='heading access-title entry-title']") is not None:
+            return False
+        else:
+            return True
+
+    def pdf_url(post):
+        parsed_url = urlparse(full_url)
+        paths = parsed_url.path.split('/')
+        paths[-2] = 'pdf'
+        paths[-1] = paths[-1].rsplit('.')[0] + '.pdf'
+        parsed_url.path = '/'.join(paths)
+        return urlunparse(parsed_url)
+
+
 class OASourceBot(object):
     user_agent = 'OA_source_bot v. {0} by /u/SavinaRoja, at /r/OA_source_bot'.format(__version__)
     ignored_users = set()
@@ -157,8 +216,9 @@ class OASourceBot(object):
                   'plosgenetics.org': PLoSDomain,
                   'plospathogens.org': PLoSDomain,
                   'plosntds.org': PLoSDomain,
-                  'plosmedicine.org': PLoSDomain}
-    already_seen = deque(maxlen=20000)  # Am I being too conservative here?
+                  'plosmedicine.org': PLoSDomain,
+                  'nature.com': NatureDomain}
+    already_seen = deque(maxlen=2000)  # Am I being too conservative here?
 
     def __init__(self, config_filename):
         log.info('Starting OA_source_bot')
