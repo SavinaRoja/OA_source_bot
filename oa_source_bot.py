@@ -25,9 +25,9 @@ Options:
 
 from collections import deque
 from docopt import docopt
+from domains import *
 import logging
 import logging.handlers
-import lxml.html
 import os
 import praw
 import re
@@ -35,13 +35,25 @@ import shutil
 import subprocess
 import sys
 import time
-from urllib.parse import urlparse, urlunparse
-import urllib.request
-import urllib.error
 
-
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 LOGNAME = 'OA_source_bot'
+
+
+def timer(interval):
+    """
+    A function decorator which will make the function only occur after the
+    specified interval of time has passed.
+    """
+    def wrap(func):
+        def wrapped_func():
+            now = time.time()
+            if now - wrapped_func.latest > interval:
+                func()
+                wrapped_func.latest = now
+        wrapped_func.latest = time.time()
+        return wrapped_func
+    return wrap
 
 
 def logging_config(filename, console_level, smtp=None):
@@ -64,155 +76,6 @@ def logging_config(filename, console_level, smtp=None):
 log = logging.getLogger(LOGNAME)
 
 
-class Domain(object):
-    """
-    Defines the basic Domain code
-    """
-    #If this is not true, don't worry about the 'doi' or
-    #'file_basename_from_doi' methods
-    oaepub_support = False
-
-    def __init__(self):
-        pass
-
-    @staticmethod
-    def predicate(post):
-        """
-        Returns True if the post's URL corresponds to an article, otherwise it
-        will return False.
-
-        Should distinguish between domain non-article URLs such as
-        http://www.plosbiology.org/static/contact (return False) and article
-        URLs such as http://www.plosbiology.org/article/info%3Adoi%2F10.1371%2Fjournal.pbio.1001812
-        (return True).
-        """
-        raise NotImplementedError
-
-    @staticmethod
-    def pdf_url(post):
-        """
-        Returns a URL to the PDF of the article.
-        """
-        raise NotImplementedError
-
-    @staticmethod
-    def doi(post):
-        """
-        Returns the article DOI from the post's URL.
-        """
-        raise NotImplementedError
-
-    @staticmethod
-    def file_basename_from_doi(doi):
-        """
-        Based on the doi, return the basename of the XML file that will be
-        downloaded for EPUB production.
-        """
-        raise NotImplementedError
-
-
-class PLoSDomain(Domain):
-    """
-    Code for handling PLoS domains.
-    """
-
-    oaepub_support = True
-
-    def __init__(self):
-        super(PLoSDomain, self).__init__()
-
-    def predicate(post):
-        if '/article/info%3Adoi%2F10.1371%2Fjournal.' in post.url:
-            return True
-        else:
-            return False
-
-    def pdf_url(post):
-        """
-        Returns a URL to the PDF of the article.
-        """
-        parsed = urlparse(post.url)
-        pdf_url = '{0}://{1}'.format(parsed.scheme, parsed.netloc)
-        pdf_url += '/article/fetchObjectAttachment.action?uri='
-        pdf_path = parsed.path.replace(':', '%3A').replace('/', '%2F')
-        pdf_path = pdf_path.split('article%2F')[1]
-        pdf_url += '{0}{1}'.format(pdf_path, '&representation=PDF')
-        return pdf_url
-
-    def doi(post):
-        """
-        Returns the article DOI from the post's URL.
-        """
-        return '/'.join(post.url.split('%2F')[1:]).split(';')[0]
-
-    def file_basename_from_doi(doi):
-        return doi.split('/')[1]
-
-
-class NatureDomain(Domain):
-    """
-    Handles nature.com
-    """
-    oaepub_support = False
-    #Last updated on 29-4-2014 from information located here:
-    #http://www.nature.com/libraries/open_access/oa_pub_models.html
-    full_oa_subjournals = set(['bcj', 'cddis', 'ctg', 'cti', 'psp', 'emi',
-                               'emm', 'hortres', 'hgv', 'ijos', 'lsa', 'mtm',
-                               'mtna', 'am', 'nutd', 'oncsis', 'srep', 'tp'])
-    opt_oa_subjournals = set(['ajg', 'aps' 'bdj', 'bdc', 'bmt', 'cgt', 'cdd',
-                              'cr', 'cmi', 'clpt', 'ejcn', 'ejhg', 'eye',
-                              'gene', 'gt', 'gim', 'hdy', 'hr', 'icb', 'ijir',
-                              'ijo', 'ismej', 'ja', 'jcbfm', 'jes', 'jhg',
-                              'jhh', 'jid', 'jp', 'ki', 'labinvest', 'leu',
-                              'modpathol', 'mp', 'mt', 'mi', 'ncomms', 'npp',
-                              'onc', 'pr', 'tpj', 'pj', 'pcan', 'sc'])
-
-    def __init__(self):
-        super(NatureDomain, self).__init__()
-
-    @classmethod
-    def predicate(self, post):
-        #matches full article link or abstract
-        full_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/full/\S+.html'
-        abst_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/abs/\S+.html'
-        full = re.search(full_regex, post.url)
-        abst = re.search(abst_regex, post.url)
-        if full is None and abst is None:  # Not an article
-            return False
-        if full is not None:
-            full_url = post.url
-        else:
-            full_url = post.url.replace('/full/', '/abs/')
-        parsed_url = urlparse(full_url)
-        subjournal = parsed_url.path.split('/')[1]
-        #Some nature subjournals are full OA
-        if subjournal in self.full_oa_subjournals:
-            return True
-        if subjournal not in self.opt_oa_subjournals:
-            return False
-
-        try:
-            page_html = urllib.request.urlopen(full_url)
-        except urllib.error.HTTPError as e:
-            log.exception(e)
-            return False
-        doc = lxml.html.fromstring(page_html.read())
-        if doc.find(".//h1[@class='heading access-title entry-title']") is not None:
-            return False
-        else:
-            return True
-
-    def pdf_url(post):
-        parsed_url = urlparse(post.url)
-        paths = parsed_url.path.split('/')
-        paths[-2] = 'pdf'
-        paths[-1] = paths[-1].rsplit('.')[0] + '.pdf'
-        modified_path = '/'.join(paths)
-        return urlunparse([parsed_url.scheme, parsed_url.netloc,
-                           modified_path, parsed_url.params,
-                           parsed_url.query, parsed_url.fragment])
-
-
 class OASourceBot(object):
     user_agent = 'OA_source_bot v. {0} by /u/SavinaRoja, at /r/OA_source_bot'.format(__version__)
     ignored_users = set()
@@ -227,6 +90,7 @@ class OASourceBot(object):
                   'plosmedicine.org': PLoSDomain,
                   'nature.com': NatureDomain}
     already_seen = deque(maxlen=2000)  # Am I being too conservative here?
+    temp_message = 'Initiating reply, refresh in a few seconds.'
 
     def __init__(self, config_filename):
         log.info('Starting OA_source_bot')
@@ -330,29 +194,33 @@ class OASourceBot(object):
         #A multireddit could be employed as shown in the commented line below,
         #however comment lags (as is common when just developing on /r/test)
         #sometimes require the use of 'all' and core_predicate filtering
+        #If you want to run a test, switch the 'all' to 'test' and make your
+        #test posts in /r/test
         for post in praw.helpers.submission_stream(self.reddit,
                                                    'all',
                                                    #'test',
                                                    #'+'.join(self.watched_subreddits),
                                                    limit=None,
                                                    verbosity=0):
-            now = time.time()
-            #Wait at least 5 minutes between reviewing posts
-            if now - self.latest_review_time > 300:
-                self.review_posts()
-            #Wait at least 5 minutes between checking mail
-            if now - self.latest_mail_check_time > 300:
-                self.check_mail()
+            #The intervals for these is implemented by their timers
+            self.review_posts()
+            self.check_mail()
+            self.backup_data()
+
+            #Apply the core predicate to the post
             if not self.core_predicate(post):
                 continue
+            #Apply the domain-specific predicate to the post
             if not self.oa_domains[post.domain].predicate(post):
                 continue
+
+            #Add the post id to the record of already seen, then reply
             self.already_seen.append(post.id)
             self.reply_to_post(post)
 
     def reply_to_post(self, post):
         log.info('Replying to post {0}'.format(post.id))
-        reply = post.add_comment('Initiating reply, refresh in a few seconds.')
+        reply = post.add_comment(self.temp_message)
         text = '''\
 This article is freely available online to everyone as \
 **[OpenAccess](http://en.wikipedia.org/wiki/Open_access)**.
@@ -452,6 +320,7 @@ feedback/suggestions, or would like to contribute.*
                                   'epub': epub_text,
                                   'comment-id': reply.id}))
 
+    @timer(300)  # 5 minute interval
     def review_posts(self):
         log.debug('Reviewing posts')
         user = self.myself
@@ -472,8 +341,8 @@ feedback/suggestions, or would like to contribute.*
                         if r_author not in self.ignored_users:
                             self.ignored_users.add(r_author)
                             self.write_new_item_to_wikipage(self.ignored_users_wikipage, r_author)
-        self.latest_review_time = time.time()
 
+    @timer(300)  # 5 minute interval
     def check_mail(self):
         log.debug('Checking mail')
         for msg in self.reddit.get_unread(limit=None):
@@ -508,7 +377,17 @@ feedback/suggestions, or would like to contribute.*
                 else:
                     log.info('/u/{0} was successfully unignored'.format(msg.author))
                     self.write_ignored_users_to_wikipage()
-        self.latest_mail_check_time = time.time()
+
+    @timer(1800)  # 30 minute interval
+    def backup_data(self):
+        log.info('Writing data')
+        self.write_all_data()
+
+    def write_already_seen_local(self):
+        log.info('Writing the record of posts that have already been seen to local file.')
+        with open('already_seen', 'w') as out:
+            for item in self.already_seen:
+                out.write(item + '\n')
 
     def write_ignored_users_to_wikipage(self):
         log.info('Writing the list of ignored users to the wikipage')
@@ -536,14 +415,14 @@ feedback/suggestions, or would like to contribute.*
             with open('watched_subreddits', 'w') as out:
                 out.write(watched_md)
 
-    def close_nicely(self):
-        log.info('Writing data and shutting down!')
-        log.info('Writing the record of posts that have already been seen.')
-        with open('already_seen', 'w') as out:
-            for item in self.already_seen:
-                out.write(item + '\n')
+    def write_all_data(self):
+        self.write_already_seen_local()
         self.write_ignored_users_to_wikipage()
         self.write_watched_subreddits_to_wikipage()
+
+    def close_nicely(self):
+        log.info('Writing data before shutting down!')
+        self.write_all_data()
 
 
 if __name__ == '__main__':
