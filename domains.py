@@ -6,6 +6,7 @@ support for domain-specific methods of providing source materials.
 
 import logging
 import lxml.html
+import re
 import urllib.error
 from urllib.parse import urlparse, urlunparse
 import urllib.request
@@ -18,7 +19,9 @@ log = logging.getLogger('OA_source_bot.domains')
 
 class Domain(object):
     """
-    Defines the basic Domain code
+    Defines the basic Domain code contract, really this is little more than a
+    useful collection of methods and static values... Inherit from this when
+    adding support for a new domain.
     """
     #If this is not true, don't worry about the 'doi' or
     #'file_basename_from_doi' methods
@@ -64,11 +67,7 @@ class Domain(object):
 
 
 class PLoSDomain(Domain):
-    """
-    Code for handling PLoS domains.
-    """
-
-    oaepub_support = True
+    oaepub_support = True  # At this time, only valid publisher
 
     def __init__(self):
         super(PLoSDomain, self).__init__()
@@ -122,7 +121,6 @@ class NatureDomain(Domain):
     def __init__(self):
         super(NatureDomain, self).__init__()
 
-    @classmethod
     def predicate(self, post):
         #matches full article link or abstract
         full_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/full/\S+.html'
@@ -137,12 +135,12 @@ class NatureDomain(Domain):
             full_url = post.url.replace('/full/', '/abs/')
         parsed_url = urlparse(full_url)
         subjournal = parsed_url.path.split('/')[1]
-        #Some nature subjournals are full OA
         if subjournal in self.full_oa_subjournals:
             return True
         if subjournal not in self.opt_oa_subjournals:
             return False
 
+        #We try to inspect the article's html to detect if access is limited
         try:
             page_html = urllib.request.urlopen(full_url)
         except urllib.error.HTTPError as e:

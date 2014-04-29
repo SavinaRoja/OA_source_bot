@@ -21,7 +21,7 @@ Options:
   -h --help                 Print this help message and exit
   -v --version              Print the version and exit
 """
-
+#TODO: Think about other options that might be useful, perhaps a --test flag
 
 from collections import deque
 from docopt import docopt
@@ -42,8 +42,8 @@ LOGNAME = 'OA_source_bot'
 
 def timer(interval):
     """
-    A function decorator which will make the function only occur after the
-    specified interval of time has passed.
+    This function can work as a decorator to prevent functions from being called
+    until a specified interval has passed since their last call.
     """
     def wrap(func):
         def wrapped_func():
@@ -93,6 +93,7 @@ class OASourceBot(object):
     temp_message = 'Initiating reply, refresh in a few seconds.'
 
     def __init__(self, config_filename):
+        #TODO: Do some checking for locally written wikipage data dumps
         log.info('Starting OA_source_bot')
         self.load_already_seen()
         self.load_config_and_login(config_filename)
@@ -188,7 +189,9 @@ class OASourceBot(object):
                     time.sleep(30)
                 except KeyboardInterrupt:
                     self.alive = False
-        self.close_nicely()
+        log.info('Writing data before shutting down!')
+        self.write_all_data()
+        log.info('Shutting down!')
 
     def _run(self):
         #A multireddit could be employed as shown in the commented line below,
@@ -322,6 +325,7 @@ feedback/suggestions, or would like to contribute.*
 
     @timer(300)  # 5 minute interval
     def review_posts(self):
+        #TODO: Look for aborted comments and delete them (comment.body == self.temp_message)
         log.debug('Reviewing posts')
         user = self.myself
         for comment in user.get_comments( 'all', limit=None):
@@ -344,6 +348,9 @@ feedback/suggestions, or would like to contribute.*
 
     @timer(300)  # 5 minute interval
     def check_mail(self):
+        #TODO: Allow subreddit moderators to add their subreddit to the watched subreddits
+        #TODO: Implement a remote kill message, bot mods can kill by mail
+        #TODO: Implement a summon message, bot mods can point bot at submissions that were missed
         log.debug('Checking mail')
         for msg in self.reddit.get_unread(limit=None):
             if msg.body.startswith('delete'):
@@ -419,10 +426,6 @@ feedback/suggestions, or would like to contribute.*
         self.write_already_seen_local()
         self.write_ignored_users_to_wikipage()
         self.write_watched_subreddits_to_wikipage()
-
-    def close_nicely(self):
-        log.info('Writing data before shutting down!')
-        self.write_all_data()
 
 
 if __name__ == '__main__':
