@@ -276,7 +276,6 @@ class OASourceBot(object):
                 continue
             if not self.oa_domains[post.domain].predicate(post):
                 continue
-            #TODO: make the already_seen data persistent between runs
             self.already_seen.append(post.id)
             self.reply_to_post(post)
 
@@ -382,7 +381,7 @@ feedback/suggestions, or would like to contribute.*
 
     def review_posts(self):
         log.debug('Reviewing posts')
-        user = self.reddit.get_redditor(self.username)
+        user = self.myself
         for comment in user.get_comments( 'all', limit=None):
             if comment.score < 0:
                 comment.delete()
@@ -404,7 +403,6 @@ feedback/suggestions, or would like to contribute.*
 
     def check_mail(self):
         log.debug('Checking mail')
-        user = self.reddit.get_redditor(self.username)
         for msg in self.reddit.get_unread(limit=None):
             if msg.body.startswith('delete'):
                 self.myself.mark_as_read(msg)
@@ -415,7 +413,7 @@ feedback/suggestions, or would like to contribute.*
                 if msg.author == comment.submission.author:
                     log.info('Valid request, deleting {0}'.format(comment_id))
                     comment.delete()
-                elif msg.author == 'SavinaRoja':
+                elif msg.author.name == 'SavinaRoja':
                     log.info('Requested by /u/SavinaRoja, deleting {0}'.format(comment_id))
                     comment.delete()
                 else:
@@ -423,15 +421,15 @@ feedback/suggestions, or would like to contribute.*
             elif msg.body == 'ignore me':
                 self.myself.mark_as_read(msg)
                 log.info('Adding /u/{0} to set of ignored users'.format(msg.author))
-                self.ignored_users.add(msg.author)
+                self.ignored_users.add(msg.author.name)
                 #Immediately add it to the wikipage storage
                 self.write_new_item_to_wikipage(self.ignored_users_wikipage,
-                                                msg.author)
+                                                msg.author.name)
             elif msg.body == 'unignore me':
                 self.myself.mark_as_read(msg)
                 log.info('/u/{0} requested removal from ignore set'.format(msg.author))
                 try:
-                    self.ignored_users.remove(msg.author)
+                    self.ignored_users.remove(msg.author.name)
                 except KeyError:
                     log.info('/u/{0} was not in the ignore set'.format(msg.author))
                 else:
