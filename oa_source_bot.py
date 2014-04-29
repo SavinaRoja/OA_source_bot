@@ -37,6 +37,7 @@ import sys
 import time
 from urllib.parse import urlparse, urlunparse
 import urllib.request
+import urllib.error
 
 
 __version__ = '0.0.1'
@@ -169,12 +170,13 @@ class NatureDomain(Domain):
     def __init__(self):
         super(NatureDomain, self).__init__()
 
-    def predicate(post):
+    @classmethod
+    def predicate(self, post):
         #matches full article link or abstract
         full_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/full/\S+.html'
         abst_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/abs/\S+.html'
         full = re.search(full_regex, post.url)
-        abst = re.search(abst, post.ufl)
+        abst = re.search(abst_regex, post.url)
         if full is None and abst is None:  # Not an article
             return False
         if full is not None:
@@ -182,14 +184,18 @@ class NatureDomain(Domain):
         else:
             full_url = post.url.replace('/full/', '/abs/')
         parsed_url = urlparse(full_url)
-        subjournal = path.split('/')[1]
+        subjournal = parsed_url.path.split('/')[1]
         #Some nature subjournals are full OA
         if subjournal in self.full_oa_subjournals:
             return True
         if subjournal not in self.opt_oa_subjournals:
             return False
 
-        page_html = urllib.request.urlopen(full_url)
+        try:
+            page_html = urllib.request.urlopen(full_url)
+        except urllib.error.HTTPError as e:
+            log.exception(e)
+            return False
         doc = lxml.html.fromstring(page_html.read())
         if doc.find(".//h1[@class='heading access-title entry-title']") is not None:
             return False
@@ -197,12 +203,14 @@ class NatureDomain(Domain):
             return True
 
     def pdf_url(post):
-        parsed_url = urlparse(full_url)
+        parsed_url = urlparse(post.url)
         paths = parsed_url.path.split('/')
         paths[-2] = 'pdf'
         paths[-1] = paths[-1].rsplit('.')[0] + '.pdf'
-        parsed_url.path = '/'.join(paths)
-        return urlunparse(parsed_url)
+        modified_path = '/'.join(paths)
+        return urlunparse([parsed_url.scheme, parsed_url.netloc,
+                           modified_path, parsed_url.params,
+                           parsed_url.query, parsed_url.fragment])
 
 
 class OASourceBot(object):
@@ -308,12 +316,14 @@ class OASourceBot(object):
             try:
                 log.info('Running')
                 self._run()
-            except KeyboardInterrupt as e:
-                #log.exception(e)
+            except KeyboardInterrupt:
                 self.alive = False
             except Exception as e:
                 log.exception(e)
-                time.sleep(30)
+                try:
+                    time.sleep(30)
+                except KeyboardInterrupt:
+                    self.alive = False
         self.close_nicely()
 
     def _run(self):
@@ -322,6 +332,7 @@ class OASourceBot(object):
         #sometimes require the use of 'all' and core_predicate filtering
         for post in praw.helpers.submission_stream(self.reddit,
                                                    'all',
+                                                   #'test',
                                                    #'+'.join(self.watched_subreddits),
                                                    limit=None,
                                                    verbosity=0):
@@ -340,6 +351,7 @@ class OASourceBot(object):
             self.reply_to_post(post)
 
     def reply_to_post(self, post):
+        log.info('Replying to post {0}'.format(post.id))
         reply = post.add_comment('Initiating reply, refresh in a few seconds.')
         text = '''\
 This article is freely available online to everyone as \
@@ -373,7 +385,6 @@ feedback/suggestions, or would like to contribute.*
 '''
 
         domain_obj = self.oa_domains[post.domain]
-        article_doi = domain_obj.doi(post)
         pdf_url = domain_obj.pdf_url(post)
 
         if not domain_obj.oaepub_support:
@@ -383,6 +394,8 @@ feedback/suggestions, or would like to contribute.*
                                       'epub': '',
                                       'comment-id': reply.id}))
             return
+
+        article_doi = domain_obj.doi(post)
 
         #Torrents are on the backburner for now. Connectivity issues are being a
         #massive pain... Bandwidth issue aside, I will eventually hit a storage
