@@ -24,9 +24,7 @@ Options:
 
 
 from collections import deque
-import datetime
 from docopt import docopt
-from io import StringIO
 import logging
 import logging.handlers
 import os
@@ -41,6 +39,7 @@ import urllib.parse
 
 __version__ = '0.0.1'
 LOGNAME = 'OA_source_bot'
+
 
 def logging_config(filename, console_level, smtp=None):
     log = logging.getLogger(LOGNAME)
@@ -141,7 +140,7 @@ class PLoSDomain(Domain):
         """
         Returns the article DOI from the post's URL.
         """
-        return '/'.join(post.url.split('%2F')[1:])
+        return '/'.join(post.url.split('%2F')[1:]).split(';')[0]
 
     def file_basename_from_doi(doi):
         return doi.split('/')[1]
@@ -163,10 +162,18 @@ class OASourceBot(object):
 
     def __init__(self, config_filename):
         log.info('Starting OA_source_bot')
+        self.load_already_seen()
         self.load_config_and_login(config_filename)
+        self.myself = self.reddit.get_redditor(self.username)
         self.parse_wikipages()
         self.latest_time = None
         self.alive = False
+
+    def load_already_seen(self):
+        if os.path.isfile('already_seen'):
+            with open('already_seen') as inf:
+                for line in inf:
+                    self.already_seen.append(line.rstrip())
 
     def load_config_and_login(self, config_filename):
         with open(config_filename, 'r') as inf:
@@ -175,8 +182,10 @@ class OASourceBot(object):
             password = inf.readline().strip()
             self.ignored_users_wikipage = inf.readline().strip()
             self.watched_subreddits_wikipage = inf.readline().strip()
-            self.dropbox = inf.readline().strip()
-            log.debug('Dropbox folder: ' + self.dropbox)
+            self.dropbox_dir = inf.readline().strip()
+            log.debug('Dropbox folder: ' + self.dropbox_dir)
+            self.dropbox_url = inf.readline().strip()
+            log.debug('Dropbox URL: ' + self.dropbox_url)
         self.reddit = praw.Reddit(self.user_agent)
         login_attempt = True
         while login_attempt:
@@ -231,14 +240,16 @@ class OASourceBot(object):
             return True
 
     def run(self):
-        log.info('Running!')
+        log.info('Initiating Run')
         self.alive = True
-        self.latest_review_time = time.time()
+        self.review_posts()
+        self.check_mail()
         while self.alive:
             try:
+                log.info('Running')
                 self._run()
             except KeyboardInterrupt as e:
-                log.exception(e)
+                #log.exception(e)
                 self.alive = False
             except Exception as e:
                 log.exception(e)
@@ -246,21 +257,27 @@ class OASourceBot(object):
         self.close_nicely()
 
     def _run(self):
+        #A multireddit could be employed as shown in the commented line below,
+        #however comment lags (as is common when just developing on /r/test)
+        #sometimes require the use of 'all' and core_predicate filtering
         for post in praw.helpers.submission_stream(self.reddit,
-                                                   '+'.join(self.watched_subreddits),
-                                                   limit=200,
+                                                   'all',
+                                                   #'+'.join(self.watched_subreddits),
+                                                   limit=None,
                                                    verbosity=0):
             now = time.time()
-            #Wait at least 10 minutes between reviewing posts
-            if now - self.latest_review_time > 600:
-                self.latest_review_time = now
+            #Wait at least 5 minutes between reviewing posts
+            if now - self.latest_review_time > 300:
                 self.review_posts()
+            #Wait at least 5 minutes between checking mail
+            if now - self.latest_mail_check_time > 300:
+                self.check_mail()
             if not self.core_predicate(post):
                 continue
             if not self.oa_domains[post.domain].predicate(post):
                 continue
             #TODO: make the already_seen data persistent between runs
-            self.already_seen.append(post)
+            self.already_seen.append(post.id)
             self.reply_to_post(post)
 
     def reply_to_post(self, post):
@@ -308,17 +325,13 @@ feedback/suggestions, or would like to contribute.*
                                       'comment-id': reply.id}))
             return
 
+        #Torrents are on the backburner for now. Connectivity issues are being a
+        #massive pain... Bandwidth issue aside, I will eventually hit a storage
+        #cap, so getting this worked out is crucial.
         basename = domain_obj.file_basename_from_doi(article_doi)
         epubname = basename + '.epub'
-        epubname2 = 'epubs/{0}-2.epub'.format(basename)
-        epubname3 = 'epubs/{0}-3.epub'.format(basename)
-        timestamp = datetime.datetime.now().isoformat()
-        torr_name2 = '{0}-{1}.2.torrent'.format(basename, timestamp)
-        torr_name3 = '{0}-{1}.3.torrent'.format(basename, timestamp)
-        torr_file2 = os.path.join('torrents', torr_name2)
-        torr_file3 = os.path.join('torrents', torr_name3)
-        torr_drop2 = os.path.join(self.dropbox, torr_name2)
-        torr_drop3 = os.path.join(self.dropbox, torr_name3)
+        epub2name = os.path.join('epub2', '{0}-2.epub'.format(basename))
+        epub3name = os.path.join('epub3', '{0}-3.epub'.format(basename))
         try:
             epub2 = subprocess.check_call(['oaepub', 'convert',
                                            '-2',
@@ -329,12 +342,8 @@ feedback/suggestions, or would like to contribute.*
             epub2 = False
         else:
             epub2 = True
-            shutil.move(epubname, epubname2)
-            subprocess.call(['mktorrent',
-                             '-a', 'udp://tracker.publicbt.com:80',
-                             '-o', torr_drop2, epubname2])
-            shutil.copy2(torr_drop2, torr_file2)
-            torr_url2 = 'http://dl.dropboxusercontent.com/u/6424897/' + torr_name2
+            shutil.move(epubname, os.path.join(self.dropbox_dir, epub2name))
+            epub2_url = self.dropbox_url + epub2name
 
         try:
             epub3 = subprocess.check_call(['oaepub', 'convert',
@@ -345,12 +354,11 @@ feedback/suggestions, or would like to contribute.*
             epub3 = False
         else:
             epub3 = True
-            shutil.move(epubname, epubname3)
-            subprocess.call(['mktorrent',
-                             '-a', 'udp://tracker.publicbt.com:80',
-                             '-o', torr_drop3, epubname3])
-            shutil.copy2(torr_drop3, torr_file3)
-            torr_url3 = 'http://dl.dropboxusercontent.com/u/6424897/' + torr_name3
+            shutil.move(epubname, os.path.join(self.dropbox_dir, epub3name))
+            epub3_url = self.dropbox_url + epub3name
+
+        log.info('Calling pyndexer')
+        subprocess.call(['python', './patched_pyndexer/pyndexer.py'])
 
         if not any([epub2, epub3]):  # Neither were successful, ignore EPUB
             reply.edit(text.format(**{'online': post.url,
@@ -360,12 +368,12 @@ feedback/suggestions, or would like to contribute.*
                                       'comment-id': reply.id}))
             return
         elif all([epub2, epub3]):  # Both successful
-            formats = '[EPUB2]({0}) | [EPUB3]({1})'.format(torr_url2, torr_url3)
+            formats = '[EPUB2]({0}) | [EPUB3]({1})'.format(epub2_url, epub3_url)
             epub_text = epub_text.format(formats)
         elif epub2:
-            epub_text = epub_text.format('[EPUB2]({0})'.format(torr_url2))
+            epub_text = epub_text.format('[EPUB2]({0})'.format(epub2_url))
         elif epub3:
-            epub_text = epub_text.format('[EPUB2]({0})'.format(torr_url3))
+            epub_text = epub_text.format('[EPUB2]({0})'.format(epub3_url))
         reply.edit(text.format(**{'online': post.url,
                                   'op': post.author,
                                   'pdf': pdf_url,
@@ -373,8 +381,9 @@ feedback/suggestions, or would like to contribute.*
                                   'comment-id': reply.id}))
 
     def review_posts(self):
+        log.debug('Reviewing posts')
         user = self.reddit.get_redditor(self.username)
-        for comment in user.get_comments(limit=None):
+        for comment in user.get_comments( 'all', limit=None):
             if comment.score < 0:
                 comment.delete()
                 log.info('Deleting comment {0} for having a low score'.format(comment.id))
@@ -391,12 +400,80 @@ feedback/suggestions, or would like to contribute.*
                         if r_author not in self.ignored_users:
                             self.ignored_users.add(r_author)
                             self.write_new_item_to_wikipage(self.ignored_users_wikipage, r_author)
+        self.latest_review_time = time.time()
 
     def check_mail(self):
-        pass
+        log.debug('Checking mail')
+        user = self.reddit.get_redditor(self.username)
+        for msg in self.reddit.get_unread(limit=None):
+            if msg.body.startswith('delete'):
+                self.myself.mark_as_read(msg)
+                #grabs the second word as the comment id
+                comment_id = msg.body.split()[1]
+                log.info('/u/{0} requested deletion of {1}'.format(msg.author, comment_id))
+                comment = self.reddit.get_info(thing_id='t1_{0}'.format(comment_id))
+                if msg.author == comment.submission.author:
+                    log.info('Valid request, deleting {0}'.format(comment_id))
+                    comment.delete()
+                elif msg.author == 'SavinaRoja':
+                    log.info('Requested by /u/SavinaRoja, deleting {0}'.format(comment_id))
+                    comment.delete()
+                else:
+                    log.info('Invalid request, not original poster')
+            elif msg.body == 'ignore me':
+                self.myself.mark_as_read(msg)
+                log.info('Adding /u/{0} to set of ignored users'.format(msg.author))
+                self.ignored_users.add(msg.author)
+                #Immediately add it to the wikipage storage
+                self.write_new_item_to_wikipage(self.ignored_users_wikipage,
+                                                msg.author)
+            elif msg.body == 'unignore me':
+                self.myself.mark_as_read(msg)
+                log.info('/u/{0} requested removal from ignore set'.format(msg.author))
+                try:
+                    self.ignored_users.remove(msg.author)
+                except KeyError:
+                    log.info('/u/{0} was not in the ignore set'.format(msg.author))
+                else:
+                    log.info('/u/{0} was successfully unignored'.format(msg.author))
+                    self.write_ignored_users_to_wikipage()
+        self.latest_mail_check_time = time.time()
+
+    def write_ignored_users_to_wikipage(self):
+        log.info('Writing the list of ignored users to the wikipage')
+        ignored_md = '\n'.join(['    ' + item for item in self.ignored_users])
+        try:
+            ign = self.reddit.get_wiki_page(self.username,
+                                            self.ignored_users_wikipage)
+            ign.edit(ignored_md)
+        except Exception as e:
+            log.exception(e)
+            log.info('An error occurred while writing wikipage! Writing to file instead.')
+            with open('ignored_users', 'w') as out:
+                out.write(ignored_md)
+
+    def write_watched_subreddits_to_wikipage(self):
+        log.info('Writing the list of watched_subreddits to the wikipage')
+        watched_md = '\n'.join(['    ' + item for item in self.watched_subreddits])
+        try:
+            wat = self.reddit.get_wiki_page(self.username,
+                                            self.watched_subreddits_wikipage)
+            wat.edit(watched_md)
+        except Exception as e:
+            log.exception(e)
+            log.info('An error occurred while writing wikipage! Writing to file instead.')
+            with open('watched_subreddits', 'w') as out:
+                out.write(watched_md)
 
     def close_nicely(self):
-        log.info('closing nicely')
+        log.info('Writing data and shutting down!')
+        log.info('Writing the record of posts that have already been seen.')
+        with open('already_seen', 'w') as out:
+            for item in self.already_seen:
+                out.write(item + '\n')
+        self.write_ignored_users_to_wikipage()
+        self.write_watched_subreddits_to_wikipage()
+
 
 if __name__ == '__main__':
     args = docopt(__doc__, version=__version__)
