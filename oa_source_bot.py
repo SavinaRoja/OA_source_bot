@@ -70,7 +70,7 @@ def logging_config(filename, console_level, smtp=None):
     if console_level.upper() != 'SILENT':
         sh = logging.StreamHandler(sys.stdout)
         sh.setLevel(logging.INFO)
-        sh.setFormatter(logging.Formatter('%(message)s'))
+        sh.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
         log.addHandler(sh)
 
 log = logging.getLogger(LOGNAME)
@@ -200,10 +200,10 @@ class OASourceBot(object):
         #If you want to run a test, switch the 'all' to 'test' and make your
         #test posts in /r/test
         for post in praw.helpers.submission_stream(self.reddit,
-                                                   'all',
-                                                   #'test',
+                                                   #'all',
+                                                   'test',
                                                    #'+'.join(self.watched_subreddits),
-                                                   limit=None,
+                                                   limit=100,
                                                    verbosity=0):
             #The intervals for these is implemented by their timers
             self.review_posts()
@@ -337,7 +337,7 @@ feedback/suggestions, or would like to contribute.*
                 log.info('Deleting comment {0} for being incomplete'.format(comment.id))
                 continue
 
-    @timer(300)  # 5 minute interval
+    @timer(15)  # 5 minute interval
     def check_mail(self):
         """
         Here is a proposed map of mail triggers and actions
@@ -350,11 +350,14 @@ feedback/suggestions, or would like to contribute.*
                       'watch subreddit': self.watch_subreddit_request,
                       'drop subreddit': self.drop_subreddit_request,
                       'remote kill': self.remote_kill_request,
-                      'check submission': self.check_submission_request,
-                      None: lambda m: log.info('Unrecognized subject: {0}'.format(m))}
+                      'check submission': self.check_submission_request}
         log.debug('Checking mail')
         for message in self.reddit.get_unread(limit=None):
-            action_map.get([message.subject.lower()])(message)
+            action = action_map.get(message.subject.lower())
+            if action is None:
+                log.info('Unrecognized subject: {0}'.format(action.subject))
+            else:
+                action(message)
 
     def delete_mail_request(self, message):
         sender = message.author.name
@@ -380,9 +383,7 @@ feedback/suggestions, or would like to contribute.*
         log.info('/u/{0} requested ignore, adding them to ignored users set'.format(sender))
         self.myself.mark_as_read(message)
         self.ignored_users.add(sender)
-        #This could result in wikipage duplicates, but those should be resolved
-        #at each backup interval or on close
-        self.write_new_item_to_wikipage(self.ignored_users_wikipage, sender)
+        self.write_ignored_users_to_wikipage()
 
     def unignore_user_request(self, message):
         sender = message.author.name
@@ -408,14 +409,35 @@ feedback/suggestions, or would like to contribute.*
             log.exception(e)
             log.info('Invalid request, probably does not exist')
         else:
-            if sender in moderators:
+            if sender in moderators or sender.name in ['SavinaRoja', 'OA_source_bot']:
+                log.info('Valid request, adding /r/{0} to watched subreddit set'.format(subname))
+                self.watched_subreddits.add(subname)
+                self.write_watched_subreddits_to_wikipage()
+
+            else:
+                log.info('Invalid. Not a mod of /r/{0}'.format(subname))
+
+    def drop_subreddit_request(self, message):
+        sender = message.author
+        subname = message.body
+        subreddit = self.reddit.get_subreddit(subname)
+        log.info('/u/{0} requested dropping /r/{1} from watched subreddits set'.format(sender.name, subname))
+        self.myself.mark_as_read(message)
+        try:
+            moderators = list(subreddit.get_moderators())
+        except Exception as e:
+            log.exception(e)
+            log.info('Invalid request, probably does not exist')
+        else:
+            if sender in moderators or sender.name in ['SavinaRoja', 'OA_source_bot']:
                 try:
                     self.watched_subreddits.remove(subname)
                 except KeyError:
                     log.info('Invalid. /r/{0} was not in watched_subreddits'.format(subname))
                 else:
-                    log.info('Valid request from mod of /r/{0}, removed from watched subreddit set'.format(subname))
+                    log.info('Valid request, removed /r/{0} from watched_subreddit set'.format(subname))
                     self.write_watched_subreddits_to_wikipage()
+
             else:
                 log.info('Invalid. Not a mod of /r/{0}'.format(subname))
 
@@ -455,25 +477,6 @@ feedback/suggestions, or would like to contribute.*
         else:
             log.info('Valid request, checking the submission')
             submission_check(submission)
-
-
-    def drop_subreddit_request(self, message):
-        sender = message.author
-        subname = message.body
-        subreddit = self.reddit.get_subreddit(subname)
-        log.info('/u/{0} requested dropping /r/{1} from watched subreddits set'.format(sender.name, subname))
-        self.myself.mark_as_read(message)
-        try:
-            moderators = list(subreddit.get_moderators())
-        except Exception as e:
-            log.exception(e)
-            log.info('Invalid request, probably does not exist')
-        else:
-            if sender in moderators:
-                log.info('Valid request from mod of /r/{0}'.format(subname))
-
-            else:
-                log.info('Invalid. Not a mod of /r/{0}'.format(subname))
 
     @timer(1800)  # 30 minute interval
     def backup_data(self):

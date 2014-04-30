@@ -72,13 +72,15 @@ class PLoSDomain(Domain):
     def __init__(self):
         super(PLoSDomain, self).__init__()
 
-    def predicate(post):
+    @classmethod
+    def predicate(self, post):
         if '/article/info%3Adoi%2F10.1371%2Fjournal.' in post.url:
             return True
         else:
             return False
 
-    def pdf_url(post):
+    @classmethod
+    def pdf_url(self, post):
         """
         Returns a URL to the PDF of the article.
         """
@@ -90,13 +92,15 @@ class PLoSDomain(Domain):
         pdf_url += '{0}{1}'.format(pdf_path, '&representation=PDF')
         return pdf_url
 
-    def doi(post):
+    @classmethod
+    def doi(self, post):
         """
         Returns the article DOI from the post's URL.
         """
         return '/'.join(post.url.split('%2F')[1:]).split(';')[0]
 
-    def file_basename_from_doi(doi):
+    @classmethod
+    def file_basename_from_doi(self, doi):
         return doi.split('/')[1]
 
 
@@ -121,6 +125,7 @@ class NatureDomain(Domain):
     def __init__(self):
         super(NatureDomain, self).__init__()
 
+    @classmethod
     def predicate(self, post):
         #matches full article link or abstract
         full_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/full/\S+.html'
@@ -152,7 +157,8 @@ class NatureDomain(Domain):
         else:
             return True
 
-    def pdf_url(post):
+    @classmethod
+    def pdf_url(self, post):
         parsed_url = urlparse(post.url)
         paths = parsed_url.path.split('/')
         paths[-2] = 'pdf'
