@@ -80,8 +80,6 @@ class PLoSDomain(Domain):
         else:
             return False
 
-http://www.ploscompbiol.org/article/info%3Adoi%2F10.1371%2Fjournal.pcbi.1003572
-                           /article/info%3Adoi%2F10.1371%2Fjournal.
     @classmethod
     def pdf_url(self, post):
         """
