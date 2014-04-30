@@ -325,26 +325,17 @@ feedback/suggestions, or would like to contribute.*
 
     @timer(300)  # 5 minute interval
     def review_posts(self):
-        #TODO: Look for aborted comments and delete them (comment.body == self.temp_message)
         log.debug('Reviewing posts')
         user = self.myself
-        for comment in user.get_comments( 'all', limit=None):
+        for comment in user.get_comments('all', limit=None):
             if comment.score < 0:
                 comment.delete()
                 log.info('Deleting comment {0} for having a low score'.format(comment.id))
                 continue
-            for reply in comment.replies:
-                r_author = reply.author.name
-                if r_author == comment.submission.author:
-                    if re.search('delete', reply.body.lower()):
-                        log.info('Deleting comment {0} by {1} request'.format(comment.id, r_author))
-                        comment.delete()
-                        continue
-                    elif re.search('ignore', reply.body.lower()):
-                        log.info('Deleting comment {0} and adding {1} to ignored users list'.format(comment.id, r_author))
-                        if r_author not in self.ignored_users:
-                            self.ignored_users.add(r_author)
-                            self.write_new_item_to_wikipage(self.ignored_users_wikipage, r_author)
+            elif comment.body == self.temp_message:
+                comment.delete()
+                log.info('Deleting comment {0} for being incomplete'.format(comment.id))
+                continue
 
     @timer(300)  # 5 minute interval
     def check_mail(self):
@@ -360,8 +351,7 @@ feedback/suggestions, or would like to contribute.*
                       'drop subreddit': self.drop_subreddit_request,
                       'remote kill': self.remote_kill_request,
                       'check submission': self.check_submission_request,
-                       '': lambda m: log.info('Empty message subject. No action'),
-                      None: lambda m: log.info('Empty message subject. No action')}
+                      None: lambda m: log.info('Unrecognized subject: {0}'.format(m))}
         log.debug('Checking mail')
         for message in self.reddit.get_unread(limit=None):
             action_map.get([message.subject.lower()])(message)
@@ -443,10 +433,10 @@ feedback/suggestions, or would like to contribute.*
         def submission_check(post):
             #Apply the core predicate to the post
             if not self.core_predicate(post):
-                continue
+                return
             #Apply the domain-specific predicate to the post
             if not self.oa_domains[post.domain].predicate(post):
-                continue
+                return
 
             #Add the post id to the record of already seen, then reply
             self.already_seen.append(post.id)
@@ -484,9 +474,6 @@ feedback/suggestions, or would like to contribute.*
 
             else:
                 log.info('Invalid. Not a mod of /r/{0}'.format(subname)
-
-
-
 
     @timer(1800)  # 30 minute interval
     def backup_data(self):
