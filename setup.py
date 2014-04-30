@@ -9,7 +9,7 @@ def long_description():
     return(readme_text)
 
 setup(name='OA_source_bot',
-      version='0.0.1',
+      version='0.0.2',
       description='Reddit bot that replies to OA submissions with content files',
       long_description=long_description(),
       author='Paul Barton',
@@ -21,5 +21,5 @@ setup(name='OA_source_bot',
       scripts=[],
       data_files=[('', ['README.md'])],
       classifiers=[],
-      install_requires=['docopt', 'praw']
+      install_requires=['docopt', 'praw', 'lxml', 'openaccess_epub']
       )
