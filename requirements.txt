@@ -1,2 +1,4 @@
 praw
 docopt
+lxml
+openaccess_epub
