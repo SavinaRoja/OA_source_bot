@@ -417,7 +417,7 @@ feedback/suggestions, or would like to contribute.*
                     log.info('Valid request from mod of /r/{0}, removed from watched subreddit set'.format(subname))
                     self.write_watched_subreddits_to_wikipage()
             else:
-                log.info('Invalid. Not a mod of /r/{0}'.format(subname)
+                log.info('Invalid. Not a mod of /r/{0}'.format(subname))
 
     def remote_kill_request(self, message):
         sender = message.author.name
