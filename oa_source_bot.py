@@ -46,10 +46,10 @@ def timer(interval):
     until a specified interval has passed since their last call.
     """
     def wrap(func):
-        def wrapped_func():
+        def wrapped_func(self):
             now = time.time()
             if now - wrapped_func.latest > interval:
-                func()
+                func(self)
                 wrapped_func.latest = now
         wrapped_func.latest = time.time()
         return wrapped_func
@@ -237,7 +237,7 @@ ___
 >Link to the article's **[PDF]({pdf})**{epub}
 
 ^[ ^Original ^poster, ^/u/{op}, ^can [^delete]\
-(http://www.reddit.com/message/compose?to=OA_source_bot&amp;subject=OA_source_bot Deletion&amp;message=delete+{comment-id})\
+(http://www.reddit.com/message/compose?to=OA_source_bot&amp;subject=Delete&amp;message={comment-id})\
 ^. ^Will ^also ^delete ^on ^score ^less ^than ^0. ^| [^About ^Me]\
 (http://www.np.reddit.com/r/OA_source_bot/wiki/index) ^]
 '''
@@ -348,42 +348,145 @@ feedback/suggestions, or would like to contribute.*
 
     @timer(300)  # 5 minute interval
     def check_mail(self):
-        #TODO: Allow subreddit moderators to add their subreddit to the watched subreddits
-        #TODO: Implement a remote kill message, bot mods can kill by mail
-        #TODO: Implement a summon message, bot mods can point bot at submissions that were missed
+        """
+        Here is a proposed map of mail triggers and actions
+        message body "delete <comment-id>"
+        """
+        #These are a map of message.subject to action
+        action_map = {'delete': self.delete_mail_request,
+                      'ignore': self.ignore_user_request,
+                      'unignore': self.unignore_user_request,
+                      'watch subreddit': self.watch_subreddit_request,
+                      'drop subreddit': self.drop_subreddit_request,
+                      'remote kill': self.remote_kill_request,
+                      'check submission': self.check_submission_request,
+                       '': lambda m: log.info('Empty message subject. No action'),
+                      None: lambda m: log.info('Empty message subject. No action')}
         log.debug('Checking mail')
-        for msg in self.reddit.get_unread(limit=None):
-            if msg.body.startswith('delete'):
-                self.myself.mark_as_read(msg)
-                #grabs the second word as the comment id
-                comment_id = msg.body.split()[1]
-                log.info('/u/{0} requested deletion of {1}'.format(msg.author, comment_id))
-                comment = self.reddit.get_info(thing_id='t1_{0}'.format(comment_id))
-                if msg.author == comment.submission.author:
-                    log.info('Valid request, deleting {0}'.format(comment_id))
-                    comment.delete()
-                elif msg.author.name == 'SavinaRoja':
-                    log.info('Requested by /u/SavinaRoja, deleting {0}'.format(comment_id))
-                    comment.delete()
-                else:
-                    log.info('Invalid request, not original poster')
-            elif msg.body == 'ignore me':
-                self.myself.mark_as_read(msg)
-                log.info('Adding /u/{0} to set of ignored users'.format(msg.author))
-                self.ignored_users.add(msg.author.name)
-                #Immediately add it to the wikipage storage
-                self.write_new_item_to_wikipage(self.ignored_users_wikipage,
-                                                msg.author.name)
-            elif msg.body == 'unignore me':
-                self.myself.mark_as_read(msg)
-                log.info('/u/{0} requested removal from ignore set'.format(msg.author))
+        for message in self.reddit.get_unread(limit=None):
+            action_map.get([message.subject.lower()])(message)
+
+    def delete_mail_request(self, message):
+        sender = message.author.name
+        comment_id = message.body
+        log.info('/u/{0} requested deletion of comment {1}'.format(sender,
+                                                                   comment_id))
+        self.myself.mark_as_read(message)
+        comment = self.reddit.get_info(thing_id='t1_{0}'.format(comment_id))
+        if not comment:
+            log.info('Invalid. Could not retrieve comment')
+            return
+        if sender == comment.submission.author.name:
+            log.info('Valid request from OP, deleting {0}'.format(comment_id))
+            comment.delete()
+        elif sender == 'SavinaRoja':
+            log.info('Valid request from /u/SavinaRoja, deleting {0}'.format(comment_id))
+            comment.delete()
+        else:
+            log.info('Invalid. Not OP or mod')
+
+    def ignore_user_request(self, message):
+        sender = message.author.name
+        log.info('/u/{0} requested ignore, adding them to ignored users set'.format(sender))
+        self.myself.mark_as_read(message)
+        self.ignored_users.add(sender)
+        #This could result in wikipage duplicates, but those should be resolved
+        #at each backup interval or on close
+        self.write_new_item_to_wikipage(self.ignored_users_wikipage, sender)
+
+    def unignore_user_request(self, message):
+        sender = message.author.name
+        log.info('/u/{0} requested unignore, removing them from ignored users set'.format(sender))
+        self.myself.mark_as_read(message)
+        try:
+            self.ignored_users.remove(sender)
+        except KeyError:
+            log.info('Invalid. /u/{0} was not in the ignored users set'.format(sender))
+        else:
+            log.info('Valid request. /u/{0} was successfully removed from unignored set'.format(sender))
+            self.write_ignored_users_to_wikipage()
+
+    def watch_subreddit_request(self, message):
+        sender = message.author
+        subname = message.body
+        subreddit = self.reddit.get_subreddit(subname)
+        log.info('/u/{0} requested addition of /r/{1} to watched subreddits set'.format(sender.name, subname))
+        self.myself.mark_as_read(message)
+        try:
+            moderators = list(subreddit.get_moderators())
+        except Exception as e:
+            log.exception(e)
+            log.info('Invalid request, probably does not exist')
+        else:
+            if sender in moderators:
                 try:
-                    self.ignored_users.remove(msg.author.name)
+                    self.watched_subreddits.remove(subname)
                 except KeyError:
-                    log.info('/u/{0} was not in the ignore set'.format(msg.author))
+                    log.info('Invalid. /r/{0} was not in watched_subreddits'.format(subname))
                 else:
-                    log.info('/u/{0} was successfully unignored'.format(msg.author))
-                    self.write_ignored_users_to_wikipage()
+                    log.info('Valid request from mod of /r/{0}, removed from watched subreddit set'.format(subname))
+                    self.write_watched_subreddits_to_wikipage()
+            else:
+                log.info('Invalid. Not a mod of /r/{0}'.format(subname)
+
+    def remote_kill_request(self, message):
+        sender = message.author.name
+        self.myself.mark_as_read(message)
+        log.info('Received remove kill request from /u/{0}'.format(sender))
+        if sender in ['SavinaRoja', 'OA_source_bot']:
+            log.info('Valid remote kill request by mod')
+            raise KeyboardInterrupt  # Mimics shutdown by CTRL-C
+        else:
+            log.info('Invalid remote kill request by non-mod')
+
+    def check_submission_request(self, message):
+        def submission_check(post):
+            #Apply the core predicate to the post
+            if not self.core_predicate(post):
+                continue
+            #Apply the domain-specific predicate to the post
+            if not self.oa_domains[post.domain].predicate(post):
+                continue
+
+            #Add the post id to the record of already seen, then reply
+            self.already_seen.append(post.id)
+            self.reply_to_post(post)
+
+        sender = message.author.name
+        submission_id = message.body
+        self.myself.mark_as_read(message)
+        log.info('Request to check submission {0} by /u/{1}'.format(submission_id, sender))
+        submission = self.reddit.get_info(thing_id='t3_{0}'.format(submission_id))
+        if not submission:
+            log.info('Invalid. Could not retrieve submission')
+            return
+        if sender not in ['SavinaRoja', 'OA_source_bot']:
+            log.info('Invalid request from non-mod')
+        else:
+            log.info('Valid request, checking the submission')
+            submission_check(submission)
+
+
+    def drop_subreddit_request(self, message):
+        sender = message.author
+        subname = message.body
+        subreddit = self.reddit.get_subreddit(subname)
+        log.info('/u/{0} requested dropping /r/{1} from watched subreddits set'.format(sender.name, subname))
+        self.myself.mark_as_read(message)
+        try:
+            moderators = list(subreddit.get_moderators())
+        except Exception as e:
+            log.exception(e)
+            log.info('Invalid request, probably does not exist')
+        else:
+            if sender in moderators:
+                log.info('Valid request from mod of /r/{0}'.format(subname))
+
+            else:
+                log.info('Invalid. Not a mod of /r/{0}'.format(subname)
+
+
+
 
     @timer(1800)  # 30 minute interval
     def backup_data(self):
