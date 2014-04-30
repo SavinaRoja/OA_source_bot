@@ -473,7 +473,7 @@ feedback/suggestions, or would like to contribute.*
                 log.info('Valid request from mod of /r/{0}'.format(subname))
 
             else:
-                log.info('Invalid. Not a mod of /r/{0}'.format(subname)
+                log.info('Invalid. Not a mod of /r/{0}'.format(subname))
 
     @timer(1800)  # 30 minute interval
     def backup_data(self):
