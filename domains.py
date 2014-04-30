@@ -74,11 +74,14 @@ class PLoSDomain(Domain):
 
     @classmethod
     def predicate(self, post):
+        log.info('testing {0} against PLoS predicate'.format(post.id))
         if '/article/info%3Adoi%2F10.1371%2Fjournal.' in post.url:
             return True
         else:
             return False
 
+http://www.ploscompbiol.org/article/info%3Adoi%2F10.1371%2Fjournal.pcbi.1003572
+                           /article/info%3Adoi%2F10.1371%2Fjournal.
     @classmethod
     def pdf_url(self, post):
         """
@@ -127,6 +130,7 @@ class NatureDomain(Domain):
 
     @classmethod
     def predicate(self, post):
+        log.info('testing {0} against NAture predicate'.format(post.id))
         #matches full article link or abstract
         full_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/full/\S+.html'
         abst_regex = 'www.nature.com/\S+/journal/v\S+/n\S+/abs/\S+.html'

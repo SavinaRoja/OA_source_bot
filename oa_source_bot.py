@@ -30,7 +30,6 @@ import logging
 import logging.handlers
 import os
 import praw
-import re
 import shutil
 import subprocess
 import sys
@@ -200,11 +199,12 @@ class OASourceBot(object):
         #If you want to run a test, switch the 'all' to 'test' and make your
         #test posts in /r/test
         for post in praw.helpers.submission_stream(self.reddit,
-                                                   #'all',
-                                                   'test',
+                                                   'all',
+                                                   #'test',
                                                    #'+'.join(self.watched_subreddits),
-                                                   limit=100,
+                                                   limit=None,
                                                    verbosity=0):
+
             #The intervals for these is implemented by their timers
             self.review_posts()
             self.check_mail()
@@ -325,7 +325,7 @@ feedback/suggestions, or would like to contribute.*
 
     @timer(300)  # 5 minute interval
     def review_posts(self):
-        log.debug('Reviewing posts')
+        log.info('Reviewing posts')
         user = self.myself
         for comment in user.get_comments('all', limit=None):
             if comment.score < 0:
@@ -337,7 +337,7 @@ feedback/suggestions, or would like to contribute.*
                 log.info('Deleting comment {0} for being incomplete'.format(comment.id))
                 continue
 
-    @timer(15)  # 5 minute interval
+    @timer(300)  # 5 minute interval
     def check_mail(self):
         """
         Here is a proposed map of mail triggers and actions
@@ -351,7 +351,7 @@ feedback/suggestions, or would like to contribute.*
                       'drop subreddit': self.drop_subreddit_request,
                       'remote kill': self.remote_kill_request,
                       'check submission': self.check_submission_request}
-        log.debug('Checking mail')
+        log.info('Checking mail')
         for message in self.reddit.get_unread(limit=None):
             action = action_map.get(message.subject.lower())
             if action is None:
