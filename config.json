@@ -1,0 +1,13 @@
+{
+  "username": "OA_source_bot",
+  "watched-subreddits-wikipage": "public_lists/watched_subreddits",
+  "dropbox-index-url": "http://dl.dropboxusercontent.com/u/6424897/",
+  "ignored-users-wikipage": "public_lists/ignored_users",
+  "log-dir": "logs",
+  "bot-moderators": [
+    "SavinaRoja",
+    "OA_source_bot"
+  ],
+  "public-dropbox-dir": "/home/pablo/Dropbox/Public",
+  "password": "its-a-secret"
+}
