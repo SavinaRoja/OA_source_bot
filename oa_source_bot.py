@@ -23,6 +23,7 @@ Options:
 """
 #TODO: Think about other options that might be useful, perhaps a --test flag
 
+from bot_utils import timer
 from collections import deque
 from docopt import docopt
 from domains import *
@@ -37,22 +38,6 @@ import time
 
 __version__ = '0.0.2'
 LOGNAME = 'OA_source_bot'
-
-
-def timer(interval):
-    """
-    This function can work as a decorator to prevent functions from being called
-    until a specified interval has passed since their last call.
-    """
-    def wrap(func):
-        def wrapped_func(self):
-            now = time.time()
-            if now - wrapped_func.latest > interval:
-                func(self)
-                wrapped_func.latest = now
-        wrapped_func.latest = time.time()
-        return wrapped_func
-    return wrap
 
 
 def logging_config(filename, console_level, smtp=None):
@@ -325,7 +310,7 @@ feedback/suggestions, or would like to contribute.*
 
     @timer(300)  # 5 minute interval
     def review_posts(self):
-        log.info('Reviewing posts')
+        log.debug('Reviewing posts')
         user = self.myself
         for comment in user.get_comments('all', limit=None):
             if comment.score < 0:
@@ -351,7 +336,7 @@ feedback/suggestions, or would like to contribute.*
                       'drop subreddit': self.drop_subreddit_request,
                       'remote kill': self.remote_kill_request,
                       'check submission': self.check_submission_request}
-        log.info('Checking mail')
+        log.debug('Checking mail')
         for message in self.reddit.get_unread(limit=None):
             action = action_map.get(message.subject.lower())
             if action is None:
