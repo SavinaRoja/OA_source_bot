@@ -12,7 +12,7 @@ Usage:
 
 Options:
   -c --conf-file=FILENAME   Specify a configuration file for the process
-                            [default: conf]
+                            [default: config.json]
   -l --log=FILENAME         Specify the log file name scheme
                             [default: logs/OA_source_bot]
   -C --console-level=LEVEL  Set how much information is output to the console
@@ -27,6 +27,7 @@ from bot_utils import timer
 from collections import deque
 from docopt import docopt
 from domains import *
+import json
 import logging
 import logging.handlers
 import os
@@ -76,15 +77,17 @@ class OASourceBot(object):
     already_seen = deque(maxlen=2000)  # Am I being too conservative here?
     temp_message = 'Initiating reply, refresh in a few seconds.'
 
-    def __init__(self, config_filename):
+    def __init__(self, config):
         #TODO: Do some checking for locally written wikipage data dumps
         log.info('Starting OA_source_bot')
+        #Load the JSON configuration file
+        self.config = config
+
         self.load_already_seen()
-        self.load_config_and_login(config_filename)
+        self.reddit.login(self.config['username'], self.config['password'])
         self.myself = self.reddit.get_redditor(self.username)
         self.parse_wikipages()
-        self.latest_time = None
-        self.alive = False
+        self.active = False
 
     def load_already_seen(self):
         if os.path.isfile('already_seen'):
@@ -132,12 +135,6 @@ class OASourceBot(object):
         for watched in watched_page.content_md.split('\n'):
             self.watched_subreddits.add(watched.strip())
 
-    def write_new_item_to_wikipage(self, wikipagename, item):
-        log.debug('Adding {0} to wikipage {1}'.format(item, wikipagename))
-        wikipage = self.reddit.get_wiki_page(self.username, wikipagename)
-        new_content_md = wikipage.content_md + '\n    ' + item
-        wikipage.edit(new_content_md)
-
     def core_predicate(self, post):
             """
             The predicate defines what posts will be recognized and replied to.
@@ -158,21 +155,21 @@ class OASourceBot(object):
 
     def run(self):
         log.info('Initiating Run')
-        self.alive = True
+        self.active = True
         self.review_posts()
         self.check_mail()
-        while self.alive:
+        while self.active:
             try:
                 log.info('Running')
                 self._run()
             except KeyboardInterrupt:
-                self.alive = False
+                self.active = False
             except Exception as e:
                 log.exception(e)
                 try:
                     time.sleep(30)
                 except KeyboardInterrupt:
-                    self.alive = False
+                    self.active = False
         log.info('Writing data before shutting down!')
         self.write_all_data()
         log.info('Shutting down!')
@@ -357,8 +354,8 @@ feedback/suggestions, or would like to contribute.*
         if sender == comment.submission.author.name:
             log.info('Valid request from OP, deleting {0}'.format(comment_id))
             comment.delete()
-        elif sender == 'SavinaRoja':
-            log.info('Valid request from /u/SavinaRoja, deleting {0}'.format(comment_id))
+        elif sender == self.config['bot-moderators']:
+            log.info('Valid request from /u/{0}, deleting {1}'.format(sender, comment_id))
             comment.delete()
         else:
             log.info('Invalid. Not OP or mod')
@@ -394,7 +391,7 @@ feedback/suggestions, or would like to contribute.*
             log.exception(e)
             log.info('Invalid request, probably does not exist')
         else:
-            if sender in moderators or sender.name in ['SavinaRoja', 'OA_source_bot']:
+            if sender in moderators or sender.name in self.config['bot-moderators']:
                 log.info('Valid request, adding /r/{0} to watched subreddit set'.format(subname))
                 self.watched_subreddits.add(subname)
                 self.write_watched_subreddits_to_wikipage()
@@ -414,7 +411,7 @@ feedback/suggestions, or would like to contribute.*
             log.exception(e)
             log.info('Invalid request, probably does not exist')
         else:
-            if sender in moderators or sender.name in ['SavinaRoja', 'OA_source_bot']:
+            if sender in moderators or sender.name in self.config['bot-moderators']:
                 try:
                     self.watched_subreddits.remove(subname)
                 except KeyError:
@@ -430,7 +427,7 @@ feedback/suggestions, or would like to contribute.*
         sender = message.author.name
         self.myself.mark_as_read(message)
         log.info('Received remove kill request from /u/{0}'.format(sender))
-        if sender in ['SavinaRoja', 'OA_source_bot']:
+        if sender in self.config['bot-moderators']:
             log.info('Valid remote kill request by mod')
             raise KeyboardInterrupt  # Mimics shutdown by CTRL-C
         else:
@@ -457,7 +454,7 @@ feedback/suggestions, or would like to contribute.*
         if not submission:
             log.info('Invalid. Could not retrieve submission')
             return
-        if sender not in ['SavinaRoja', 'OA_source_bot']:
+        if sender not in self.config['bot-moderators']:
             log.info('Invalid request from non-mod')
         else:
             log.info('Valid request, checking the submission')
@@ -509,5 +506,9 @@ feedback/suggestions, or would like to contribute.*
 if __name__ == '__main__':
     args = docopt(__doc__, version=__version__)
     logging_config(args['--log'], args['--console-level'])
-    bot = OASourceBot(args['--conf-file'])
-    bot.run()
+
+    with open(args['--conf-file'], 'r') as inp:
+        config = json.load(inp)
+
+    bot = OASourceBot(config)
+    #bot.run()
