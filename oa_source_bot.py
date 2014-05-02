@@ -6,18 +6,18 @@ OA_source_bot
 A reddit bot for the automatic provision of OpenAccess content files
 
 Usage:
-  oa_source_bot.py [--conf-file=FILENAME] [--log=FILENAME]
-                   [--console-level=LEVEL]
+  oa_source_bot.py [--conf-file=FILENAME] [--log-dir=DIRECTORY]
+                   [--console-level=LEVEL] [--test]
   oa_source_bot.py [--help | --version]
 
 Options:
   -c --conf-file=FILENAME   Specify a configuration file for the process
                             [default: config.json]
-  -l --log=FILENAME         Specify the log file name scheme
-                            [default: logs/OA_source_bot]
+  -l --log-dir=DIRECTORY    Specify the directory in which logs will be stored
   -C --console-level=LEVEL  Set how much information is output to the console
                             (one of: "CRITICAL", "ERROR", "WARNING", "INFO",
                             "DEBUG", "SILENT") [default: INFO]
+  -t --test                 Launch the bot in test mode, only watches /r/test
   -h --help                 Print this help message and exit
   -v --version              Print the version and exit
 """
@@ -37,16 +37,17 @@ import subprocess
 import sys
 import time
 
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 LOGNAME = 'OA_source_bot'
 
 
-def logging_config(filename, console_level, smtp=None):
+def logging_config(log_dir, console_level, smtp=None):
     log = logging.getLogger(LOGNAME)
     log.setLevel(logging.DEBUG)
-    if not os.path.isdir(os.path.dirname(filename)):
-        os.makedirs(os.path.dirname(filename))
-    trfh = logging.handlers.TimedRotatingFileHandler(filename,
+    if not os.path.isdir(log_dir):
+        os.makedirs(log_dir)
+    log_file = os.path.join(log_dir, LOGNAME)
+    trfh = logging.handlers.TimedRotatingFileHandler(log_file,
                                                      when='midnight',
                                                      utc=True)
     trfh.setLevel(logging.DEBUG)
@@ -77,43 +78,34 @@ class OASourceBot(object):
     already_seen = deque(maxlen=2000)  # Am I being too conservative here?
     temp_message = 'Initiating reply, refresh in a few seconds.'
 
-    def __init__(self, config):
+    def __init__(self, config, test=None):
         #TODO: Do some checking for locally written wikipage data dumps
         log.info('Starting OA_source_bot')
         #Load the JSON configuration file
         self.config = config
+        for key, val in self.config.items():
+            log.debug('{0}: {1}'.format(key, val))
+        self.username = self.config['username']
+        self.password = self.config['password']
+
+        self.subscribe = 'test' if test is not None else 'all'
+
+        self.reddit = praw.Reddit(self.user_agent)
+        self.login()
+        self.myself = self.reddit.get_redditor(self.username)
 
         self.load_already_seen()
-        self.reddit.login(self.config['username'], self.config['password'])
-        self.myself = self.reddit.get_redditor(self.username)
         self.parse_wikipages()
         self.active = False
 
-    def load_already_seen(self):
-        if os.path.isfile('already_seen'):
-            with open('already_seen') as inf:
-                for line in inf:
-                    self.already_seen.append(line.rstrip())
-
-    def load_config_and_login(self, config_filename):
-        with open(config_filename, 'r') as inf:
-            self.username = inf.readline().strip()
-            log.debug('Username: ' + self.username)
-            password = inf.readline().strip()
-            self.ignored_users_wikipage = inf.readline().strip()
-            self.watched_subreddits_wikipage = inf.readline().strip()
-            self.dropbox_dir = inf.readline().strip()
-            log.debug('Dropbox folder: ' + self.dropbox_dir)
-            self.dropbox_url = inf.readline().strip()
-            log.debug('Dropbox URL: ' + self.dropbox_url)
-        self.reddit = praw.Reddit(self.user_agent)
+    def login(self):
         login_attempt = True
         while login_attempt:
             try:
-                self.reddit.login(self.username, password)
+                self.reddit.login(self.username, self.password)
             except praw.errors.InvalidUserPass as e:  # Quit if bad password
                 log.exception(e)
-                sys.exit(str(e))
+                sys.exit('Aborting!')
             except Exception as e:  # Connection trouble? Wait
                 log.exception(e)
                 log.info('Login unsuccessful, waiting 10 seconds before trying again.')
@@ -122,36 +114,40 @@ class OASourceBot(object):
                 login_attempt = False
                 log.info('Login successful!')
 
+    def load_already_seen(self):
+        if os.path.isfile('already_seen'):
+            with open('already_seen') as inf:
+                for line in inf:
+                    self.already_seen.append(line.rstrip())
+
     def parse_wikipages(self):
         log.info('Attempting to load information from wikipages')
-        log.debug('Accessing wikipage {0} for ignored users'.format(self.ignored_users_wikipage))
-        ignored_page = self.reddit.get_wiki_page(self.username,
-                                                 self.ignored_users_wikipage)
-        for ignored in ignored_page.content_md.split('\n'):
-            self.ignored_users.add(ignored.strip())
-        log.debug('Accessing wikipage {0} for watched subreddits'.format(self.watched_subreddits_wikipage))
-        watched_page = self.reddit.get_wiki_page(self.username,
-                                                 self.watched_subreddits_wikipage)
-        for watched in watched_page.content_md.split('\n'):
-            self.watched_subreddits.add(watched.strip())
+        ignored_users = self.config['ignored-users-wikipage']
+        ignored_page = self.reddit.get_wiki_page(self.username, ignored_users)
+        for user in ignored_page.content_md.split('\n'):
+            self.ignored_users.add(user.strip())
+        watched_subs = self.config['watched-subreddits-wikipage']
+        watched_page = self.reddit.get_wiki_page(self.username, watched_subs)
+        for sub in watched_page.content_md.split('\n'):
+            self.watched_subreddits.add(sub.strip())
 
     def core_predicate(self, post):
-            """
-            The predicate defines what posts will be recognized and replied to.
-            This will return True only for posts to which OA_source_bot will
-            try to reply to.
-            """
-            if post.subreddit.display_name not in self.watched_subreddits:
-                return False
-            if post.author is None:  # Deleted? Removed? Skip it.
-                return False
-            if post.author.name in self.ignored_users:
-                return False
-            if post.id in self.already_seen:
-                return False
-            if post.domain not in self.oa_domains:
-                return False
-            return True
+        """
+        The predicate defines what posts will be recognized and replied to.
+        This will return True only for posts to which OA_source_bot will
+        try to reply to.
+        """
+        if post.subreddit.display_name not in self.watched_subreddits:
+            return False
+        if post.author is None:  # Deleted? Removed? Skip it.
+            return False
+        if post.author.name in self.ignored_users:
+            return False
+        if post.id in self.already_seen:
+            return False
+        if post.domain not in self.oa_domains:
+            return False
+        return True
 
     def run(self):
         log.info('Initiating Run')
@@ -181,8 +177,7 @@ class OASourceBot(object):
         #If you want to run a test, switch the 'all' to 'test' and make your
         #test posts in /r/test
         for post in praw.helpers.submission_stream(self.reddit,
-                                                   'all',
-                                                   #'test',
+                                                   self.subscribe,
                                                    #'+'.join(self.watched_subreddits),
                                                    limit=None,
                                                    verbosity=0):
@@ -250,6 +245,8 @@ feedback/suggestions, or would like to contribute.*
 
         article_doi = domain_obj.doi(post)
 
+        dropbox_dir = self.config['public-dropbox-dir']
+        dropbox_url = self.config['dropbox-index-url']
         #Torrents are on the backburner for now. Connectivity issues are being a
         #massive pain... Bandwidth issue aside, I will eventually hit a storage
         #cap, so getting this worked out is crucial.
@@ -267,8 +264,8 @@ feedback/suggestions, or would like to contribute.*
             epub2 = False
         else:
             epub2 = True
-            shutil.move(epubname, os.path.join(self.dropbox_dir, epub2name))
-            epub2_url = self.dropbox_url + epub2name
+            shutil.move(epubname, os.path.join(dropbox_dir, epub2name))
+            epub2_url = dropbox_url + epub2name
 
         try:
             epub3 = subprocess.check_call(['oaepub', 'convert',
@@ -279,8 +276,8 @@ feedback/suggestions, or would like to contribute.*
             epub3 = False
         else:
             epub3 = True
-            shutil.move(epubname, os.path.join(self.dropbox_dir, epub3name))
-            epub3_url = self.dropbox_url + epub3name
+            shutil.move(epubname, os.path.join(dropbox_dir, epub3name))
+            epub3_url = dropbox_url + epub3name
 
         log.info('Calling pyndexer')
         subprocess.call(['python', './patched_pyndexer/pyndexer.py'])
@@ -476,7 +473,7 @@ feedback/suggestions, or would like to contribute.*
         ignored_md = '\n'.join(['    ' + item for item in self.ignored_users])
         try:
             ign = self.reddit.get_wiki_page(self.username,
-                                            self.ignored_users_wikipage)
+                                            self.config['ignored-users-wikipage'])
             ign.edit(ignored_md)
         except Exception as e:
             log.exception(e)
@@ -489,7 +486,7 @@ feedback/suggestions, or would like to contribute.*
         watched_md = '\n'.join(['    ' + item for item in self.watched_subreddits])
         try:
             wat = self.reddit.get_wiki_page(self.username,
-                                            self.watched_subreddits_wikipage)
+                                            self.config['watched-subreddits-wikipage'])
             wat.edit(watched_md)
         except Exception as e:
             log.exception(e)
@@ -505,10 +502,13 @@ feedback/suggestions, or would like to contribute.*
 
 if __name__ == '__main__':
     args = docopt(__doc__, version=__version__)
-    logging_config(args['--log'], args['--console-level'])
 
     with open(args['--conf-file'], 'r') as inp:
         config = json.load(inp)
 
-    bot = OASourceBot(config)
-    #bot.run()
+    log_dir = args['--log-dir'] if args['--log-dir'] else config['log-dir']
+
+    logging_config(log_dir, args['--console-level'])
+
+    bot = OASourceBot(config, test=args['--test'])
+    bot.run()
